@@ -2,7 +2,12 @@
 (function () {
   var cfg = window.XP_CONFIG || {};
   var configured = !!(cfg.supabaseUrl && cfg.supabaseAnonKey);
-  var sb = configured ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey) : null;
+  // Same key Supabase uses by default, so members already signed in stay signed in after this update.
+  var STORAGE_KEY = configured ? 'sb-' + new URL(cfg.supabaseUrl).hostname.split('.')[0] + '-auth-token' : '';
+  // The login is saved on the phone and renewed in the background, so members stay signed in.
+  var sb = configured ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storageKey: STORAGE_KEY, storage: window.localStorage },
+  }) : null;
 
   function loginEmail(phone) { return phone + '@phone.xptraining.app'; }
   function unwrap(res) {
@@ -28,6 +33,9 @@
   window.api = {
     configured: configured,
     hasSession: async function () { return !!(await sb.auth.getSession()).data.session; },
+    hasSavedSession: function () { try { return !!localStorage.getItem(STORAGE_KEY); } catch (e) { return false; } },
+    // True only when the server says the saved login is no longer valid, never for a dropped connection.
+    isAuthError: function (e) { var m = (e && e.message) || ''; return /jwt|refresh token|not authenticated|invalid claim|session/i.test(m) && !/fetch|network|load failed/i.test(m); },
     login: login,
     logout: function () { return sb.auth.signOut(); },
     register: async function (d) { await account(Object.assign({ action: 'register' }, d)); await login(d.phone, d.password); },

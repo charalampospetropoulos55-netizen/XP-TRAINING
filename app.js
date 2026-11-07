@@ -568,6 +568,11 @@ function render() {
   if (UI.screen === 'setup') {
     body = LOGO + '<div class="notice">Η εφαρμογή δεν έχει συνδεθεί ακόμα με τη βάση δεδομένων. Συμπλήρωσε το αρχείο config.js σύμφωνα με τις οδηγίες.</div>';
     cls += ' bare';
+  } else if (UI.screen === 'offline') {
+    body = LOGO + '<div class="notice">' + esc(UI.authErr || 'Δεν υπάρχει σύνδεση στο internet.') + '</div>' +
+      '<p class="small muted">Μένεις συνδεδεμένος. Η εφαρμογή θα φορτώσει μόλις επανέλθει η σύνδεση.</p>' +
+      '<button type="button" class="btn full" data-a="retry">Δοκίμασε ξανά</button>';
+    cls += ' bare';
   } else if (UI.screen === 'auth') {
     body = viewAuth(); cls += ' bare';
   } else if (UI.mode === 'admin' && D.me.is_admin) {
@@ -620,6 +625,7 @@ var ACT = {
   day: function (t) { UI.day = t.dataset.v; render(); },
   aday: function (t) { UI.aDay = t.dataset.v; render(); },
   close: closeSheet,
+  retry: function () { openApp(); },
   logout: async function () { stopLiveUpdates(); await api.logout(); D = { me: null, subs: {}, rules: {}, classes: [], recurring: [], members: [], allSubs: {}, notes: [] }; UI.screen = 'auth'; UI.authMode = 'login'; UI.authErr = ''; UI.mode = 'member'; UI.sheet = null; UI.imp = null; UI.impResult = null; UI.invites = null; UI.q = ''; render(); },
   'ask-book': function (t) { UI.sheet = { kind: 'book', id: t.dataset.id }; render(); },
   'ask-cancel': function (t) { UI.sheet = { kind: 'cancel', id: t.dataset.id }; render(); },
@@ -799,11 +805,20 @@ async function start() {
   bindEvents();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(function () {});
   if (!api.configured) { UI.screen = 'setup'; render(); return; }
+  await openApp();
+  // A phone that comes back online retries on its own, without asking for the password again.
+  window.addEventListener('online', function () { if (UI.screen === 'offline') openApp(); });
+}
+// A saved login is kept until the member taps «Αποσύνδεση». A weak connection never logs anyone out.
+async function openApp() {
+  var hasSession = false;
+  try { hasSession = await api.hasSession(); } catch (e) { hasSession = api.hasSavedSession(); }
+  if (!hasSession) { UI.screen = 'auth'; render(); return; }
   try {
-    if (await api.hasSession()) { await refresh(); UI.screen = 'app'; startLive(); }
-    else UI.screen = 'auth';
+    await refresh(); UI.screen = 'app'; UI.authErr = ''; startLive();
   } catch (e) {
-    UI.screen = 'auth'; UI.authErr = friendlyError(e);
+    if (api.isAuthError(e)) { await api.logout().catch(function () {}); UI.screen = 'auth'; UI.authErr = 'Η σύνδεσή σου έληξε. Μπες ξανά με τον κωδικό σου.'; }
+    else { UI.screen = 'offline'; UI.authErr = friendlyError(e); }
   }
   render();
 }
