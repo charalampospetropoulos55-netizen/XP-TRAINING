@@ -74,6 +74,7 @@
         wait: unwrap(await sb.from('waitlist').select('member_id,seq').eq('class_id', id).order('seq')),
       };
     },
+    memberBookings: async function (id) { return unwrap(await sb.from('bookings').select('class_id,attended').eq('member_id', id)); },
     adminBook: async function (memberId, classId) { return unwrap(await sb.rpc('admin_book', { p_member: memberId, p_class: classId })); },
     adminRemove: async function (memberId, classId) { return unwrap(await sb.rpc('admin_remove', { p_member: memberId, p_class: classId })); },
     setAttended: async function (memberId, classId, v) { return unwrap(await sb.rpc('set_attended', { p_member: memberId, p_class: classId, p_value: v })); },
