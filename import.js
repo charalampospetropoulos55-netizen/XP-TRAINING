@@ -1,32 +1,35 @@
 // Reads the Bookyway "Users Registry Report" inside the admin's browser.
 // Only the fields the new system needs are kept. Notes, address and date of birth are never read.
 (function () {
-  var REQUIRED = ['Id', 'Surname', 'Name', 'E-mail', 'Phone', 'Subscription Expiration', 'Invalid Email', 'Available credits'];
-  var CREDIT_FALLBACK_DAYS = 365;
+  var REQUIRED = ['Id', 'Surname', 'Name', 'E-mail', 'Phone', 'Subscription Expiration', 'Invalid Email'];
   var LEVELS = ['Αρχάριοι', 'Μέτριοι', 'Προχωρημένοι'];
   var STRONG = 0.8; // Share of visits above which a member counts as doing mainly one discipline.
 
   function p2(n) { return (n < 10 ? '0' : '') + n; }
+  // Accepts an Excel date number, a date object or text such as 31/12/2026, 31-12-2026, 31.12.26 or 2026-12-31.
   function excelDateKey(v) {
     if (v === null || v === undefined || v === '') return null;
-    var n = Number(v);
-    if (!isFinite(n)) return null;
+    if (v instanceof Date) return isNaN(v) ? null : v.getFullYear() + '-' + p2(v.getMonth() + 1) + '-' + p2(v.getDate());
+    var s = String(v).trim(), m;
+    if ((m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return validKey(+m[1], +m[2], +m[3]);
+    if ((m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/))) return validKey(m[3].length === 2 ? 2000 + +m[3] : +m[3], +m[2], +m[1]);
+    var n = Number(s);
+    if (!isFinite(n) || n <= 0) return null;
     var d = new Date(Math.round((n - 25569) * 864e5));
     return d.getUTCFullYear() + '-' + p2(d.getUTCMonth() + 1) + '-' + p2(d.getUTCDate());
+  }
+  function validKey(y, mo, da) {
+    if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+    return y + '-' + p2(mo) + '-' + p2(da);
   }
   function normalizePhone(v) {
     var s = String(v == null ? '' : v).replace(/[^\d]/g, '').replace(/^00/, '');
     if (s.length === 12 && s.indexOf('30') === 0) s = s.slice(2);
     return /^69\d{8}$/.test(s) ? s : null;
   }
-  function addDaysKey(key, days) {
-    var a = key.split('-');
-    var d = new Date(Date.UTC(+a[0], +a[1] - 1, +a[2] + days));
-    return d.getUTCFullYear() + '-' + p2(d.getUTCMonth() + 1) + '-' + p2(d.getUTCDate());
-  }
 
   // rows: objects keyed by the file's column titles. Keeps every member.
-  // Only those still active today or holding credits get a subscription.
+  // Only those whose subscription has not yet expired get one. Credits are not used.
   function parseRows(rows, todayKey) {
     if (!rows.length) throw new Error('Το αρχείο είναι άδειο.');
     var missing = REQUIRED.filter(function (h) { return !(h in rows[0]); });
@@ -34,9 +37,7 @@
     var seenPhones = {}, out = [], inactive = 0;
     rows.forEach(function (r) {
       var exp = excelDateKey(r['Subscription Expiration']);
-      var credits = Math.floor(Number(r['Available credits']) || 0);
-      var active = exp && exp >= todayKey;
-      var hasPlan = active || credits > 0;
+      var hasPlan = !!(exp && exp >= todayKey);
       if (!hasPlan) inactive++;
       var issues = [];
       var phone = normalizePhone(r['Phone']);
@@ -46,14 +47,8 @@
       var email = String(r['E-mail'] || '').trim();
       if (String(r['Invalid Email']).trim().toUpperCase() === 'Y' || !/^\S+@\S+\.\S+$/.test(email)) email = '';
       var plan = null;
-      if (!hasPlan) {
-        // Stays on the list without a subscription, until it is renewed.
-      } else if (credits > 0) {
-        plan = { kind: 'count', visits: credits, expires: active ? exp : addDaysKey(todayKey, CREDIT_FALLBACK_DAYS) };
-        if (!active) issues.push('Credits χωρίς ενεργή λήξη: μπαίνει 1 χρόνος');
-      } else {
-        plan = { kind: 'unlimited', visits: null, expires: exp };
-      }
+      // Without an active expiry date the member stays on the list without a subscription, until it is renewed.
+      if (hasPlan) plan = { kind: 'unlimited', visits: null, expires: exp };
       out.push({
         // In this club's Bookyway records the surname sits in the Name column.
         bookyway_id: String(r['Id']), first_name: String(r['Surname'] || '').trim(), last_name: String(r['Name'] || '').trim(),
