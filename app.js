@@ -20,13 +20,14 @@ function daysUntil(k) { return Math.round((dateOf(k) - dateOf(todayKey())) / 864
 function shortDate(k) { var d = dateOf(k); return d.getDate() + '/' + (d.getMonth() + 1); }
 function niceDate(k) { var d = dateOf(k); return DAY[d.getDay()] + ' ' + shortDate(k); }
 function fmtMoment(t) { return DAYS[t.getDay()] + ' ' + t.getDate() + '/' + (t.getMonth() + 1) + ', ' + p2(t.getHours()) + ':' + p2(t.getMinutes()); }
+function addMonths(k, n) { var d = dateOf(k), day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + n); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return keyOf(d); }
 function monday() { var d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return keyOf(d); }
 function fullName(m) { return m.first_name + ' ' + m.last_name; }
 function byId(id) { return document.getElementById(id); }
 
 /* ---------- State ---------- */
 var D = { me: null, subs: {}, rules: {}, classes: [], recurring: [], members: [], allSubs: {} };
-var UI = { screen: 'loading', authMode: 'login', authErr: '', mode: 'member', tab: 'program', admin: 'today', disc: 'w', day: null, aDay: null, q: '', filter: 'all', sheet: null, imp: null, invites: null };
+var UI = { screen: 'loading', authMode: 'login', authErr: '', mode: 'member', tab: 'program', admin: 'today', disc: 'w', day: null, aDay: null, sView: 'week', wk: null, q: '', filter: 'all', more: '', sheet: null, imp: null, invites: null };
 var busy = false, toastTimer = null;
 
 function normalizeClass(c) {
@@ -197,7 +198,8 @@ function viewAuth() {
   }
   return h;
 }
-function phoneValue() { return byId('auPhone').value.replace(/\s/g, ''); }
+function cleanPhone(v) { var s = String(v || '').replace(/[^\d]/g, '').replace(/^00/, ''); if (s.length === 12 && s.indexOf('30') === 0) s = s.slice(2); return s; }
+function phoneValue() { return cleanPhone(byId('auPhone').value); }
 async function authSubmit(fn) {
   if (busy) return;
   busy = true; UI.authErr = '';
@@ -362,32 +364,80 @@ function classesOn(k) { return D.classes.filter(function (c) { return c.date ===
 function adminClassRow(c) {
   return '<article class="cls d-' + c.d + '"><div class="time">' + c.time + '</div><div class="cinfo"><div class="ctitle">' + esc(classTitle(c)) + '</div>' + pips(c) + countText(c) + '</div><div class="cact"><span class="hint">' + esc(c.coach) + '</span><button type="button" class="btn ghost tiny" data-a="open-class" data-id="' + c.id + '">Άνοιγμα</button></div></article>';
 }
-function memberRow(m) {
-  var al = memberAlerts(m);
-  return '<button type="button" class="memberbtn" data-a="open-member" data-id="' + m.id + '"><span><b>' + esc(fullName(m)) + '</b><br><span class="small muted">' + esc(m.phone || 'Χωρίς κινητό') + '</span></span><span class="pills">' + al.map(function (a) { return '<span class="pill ' + a.c + '">' + esc(a.t) + '</span>'; }).join('') + '</span></button>';
+/* Subscription state of a member, across both disciplines, the way the front desk thinks of it. */
+function subState(m) {
+  var subs = D.allSubs[m.id] || {}, best = null;
+  ['w', 'p'].forEach(function (d) { var s = subs[d]; if (s && (!best || s.expires_on > best.expires_on)) best = s; });
+  if (!best) return { k: 'none', left: null };
+  var left = daysUntil(best.expires_on);
+  return { k: left < 0 ? 'expired' : left <= 7 ? 'soon' : 'active', left: left, exp: best.expires_on };
 }
+function subLine(m) {
+  var subs = D.allSubs[m.id] || {}, parts = [];
+  ['w', 'p'].forEach(function (d) {
+    var s = subs[d]; if (!s) return;
+    var left = daysUntil(s.expires_on);
+    parts.push('<span class="sub ' + (left < 0 ? 'bad' : left <= 7 ? 'warn' : 'ok') + '">' + DISC[d].name + (left < 0 ? ' · έληξε ' : ' · έως ') + shortDate(s.expires_on) + '</span>');
+  });
+  return parts.length ? parts.join('') : '<span class="sub">Χωρίς συνδρομή</span>';
+}
+function memberRow(m) {
+  var al = memberAlerts(m).filter(function (a) { return a.k !== 'exp'; });
+  return '<button type="button" class="memberbtn" data-a="open-member" data-id="' + m.id + '"><span class="grow"><b>' + esc(fullName(m)) + '</b><br><span class="small muted">' + esc(m.phone || 'Χωρίς κινητό') + '</span></span><span class="subs">' + subLine(m) + '</span>' + (al.length ? '<span class="pills">' + al.map(function (a) { return '<span class="pill ' + a.c + '">' + esc(a.t) + '</span>'; }).join('') + '</span>' : '') + '</button>';
+}
+function countBy(k) { return D.members.filter(function (m) { return subState(m).k === k; }).length; }
 function viewToday() {
   var t = todayKey(), k = t, i;
   for (i = 0; i < 7 && !classesOn(k).length; i++) k = addDays(k, 1);
   var list = classesOn(k), booked = 0, free = 0;
   list.forEach(function (c) { booked += c.booked; free += c.cap - c.booked; });
-  var att = D.members.filter(function (m) { return memberAlerts(m).some(function (a) { return a.k === 'exp'; }); });
+  var soon = D.members.filter(function (m) { return subState(m).k === 'soon'; }).sort(function (a, b) { return subState(a).left - subState(b).left; });
+  var lately = D.members.filter(function (m) { var x = subState(m); return x.k === 'expired' && x.left >= -30; });
   var fresh = D.members.filter(function (m) { return m.status === 'pending'; });
-  var h = '<div class="top">' + LOGO + '<div class="hello">' + niceDate(k) + (k === t ? '' : ' (επόμενη μέρα με μαθήματα)') + '</div></div>';
+  var active = countBy('active') + soon.length;
+  function tile(n, l, f, c) { return '<button type="button" class="tile' + (c ? ' ' + c : '') + '" data-a="goto-filter" data-v="' + f + '"><b>' + n + '</b><span>' + l + '</span></button>'; }
+  var h = '<div class="top">' + LOGO + '<div class="hello">' + niceDate(t) + '</div></div>';
+  h += '<div class="tiles">' + tile(active, 'Ενεργές συνδρομές', 'active') + tile(soon.length, 'Λήγουν σε 7 μέρες', 'soon', soon.length ? 'warn' : '') + tile(lately.length, 'Έληξαν τον τελευταίο μήνα', 'expired', lately.length ? 'bad' : '') + tile(D.members.length, 'Όλα τα μέλη', 'all') + '</div>';
+  if (fresh.length) h += '<div class="notice">' + (fresh.length === 1 ? '1 νέα εγγραφή περιμένει' : fresh.length + ' νέες εγγραφές περιμένουν') + ' ενεργοποίηση. <button type="button" class="linkbtn" style="color:inherit" data-a="goto-more" data-v="new">Δες τις</button></div>';
+  h += '<h2 class="sec">' + (k === t ? 'Σήμερα' : niceDate(k) + ' (επόμενη μέρα με μαθήματα)') + '</h2>';
   h += '<div class="panel stats"><div><b>' + list.length + '</b><span>Μαθήματα</span></div><div><b>' + booked + '</b><span>Κρατήσεις</span></div><div><b>' + free + '</b><span>Ελεύθερες θέσεις</span></div></div>';
-  if (fresh.length) h += '<div class="notice">' + (fresh.length === 1 ? '1 νέα εγγραφή περιμένει' : fresh.length + ' νέες εγγραφές περιμένουν') + ' ενεργοποίηση. <button type="button" class="linkbtn" style="color:inherit" data-a="goto-filter" data-v="new">Δες τις</button></div>';
   h += list.length ? '<div class="stack">' + list.map(adminClassRow).join('') + '</div>' : '<div class="empty"><span>Δεν υπάρχουν μαθήματα ακόμα.</span><button type="button" class="btn" data-a="atab" data-v="schedule">Φτιάξε το πρόγραμμα</button></div>';
-  h += '<h2 class="sec">Λήγουν σύντομα (' + att.length + ')</h2><p class="small muted">Το μέλος βλέπει ειδοποίηση ' + WARN_DAYS + ' μέρες πριν από τη λήξη. Όσοι δεν έχουν email μαθαίνουν μόνο όταν ανοίξουν την εφαρμογή.</p><div class="panel">' + (att.slice(0, 5).map(memberRow).join('') || '<span class="muted">Κανείς αυτή την εβδομάδα.</span>') + (att.length > 5 ? '<button type="button" class="btn ghost tiny" data-a="goto-filter" data-v="exp">Δες όλους</button>' : '') + '</div>';
+  h += '<h2 class="sec">Λήγουν σύντομα (' + soon.length + ')</h2><p class="small muted">Το μέλος βλέπει ειδοποίηση ' + WARN_DAYS + ' μέρες πριν από τη λήξη. Πάτα ένα μέλος για ανανέωση.</p><div class="panel">' + (soon.slice(0, 8).map(memberRow).join('') || '<span class="muted">Κανείς αυτή την εβδομάδα.</span>') + (soon.length > 8 ? '<button type="button" class="btn ghost tiny" data-a="goto-filter" data-v="soon">Δες όλους</button>' : '') + '</div>';
+  return h;
+}
+function weekStart(k) { return addDays(k, -((dateOf(k).getDay() + 6) % 7)); }
+function weekView() {
+  var t = todayKey(), first = UI.wk || weekStart(t), i, cols = '', total = 0, booked = 0;
+  for (i = 0; i < 7; i++) {
+    var k = addDays(first, i), x = dateOf(k), list = classesOn(k);
+    list.forEach(function (c) { total += c.cap; booked += c.booked; });
+    cols += '<div class="wkcol' + (k === t ? ' today' : '') + '"><button type="button" class="wkhead" data-a="aday-day" data-v="' + k + '"><small>' + DAYS[x.getDay()] + '</small><span>' + x.getDate() + '</span></button>' +
+      (list.length ? list.map(function (c) {
+        var full = c.booked >= c.cap, pct = Math.min(100, Math.round(c.booked / c.cap * 100));
+        return '<button type="button" class="wkc d-' + c.d + (isStarted(c) ? ' past' : '') + '" data-a="open-class" data-id="' + c.id + '" aria-label="' + esc(classTitle(c)) + ', ' + niceDate(c.date) + ' ' + c.time + ', ' + c.booked + ' από ' + c.cap + '">' +
+          '<b>' + c.time + '</b><span class="wkt">' + esc(c.d === 'p' ? 'Πιλάτες' : 'Βάρη') + (c.d === 'p' && c.level ? ' · ' + esc(c.level.slice(0, 4)) + '.' : '') + '</span>' +
+          '<span class="wkn' + (full ? ' full' : '') + '">' + c.booked + '/' + c.cap + (c.waits ? ' +' + c.waits : '') + '</span><i style="width:' + pct + '%"></i></button>';
+      }).join('') : '<span class="wkempty">—</span>') + '</div>';
+  }
+  var last = addDays(first, 6);
+  var h = '<div class="wknav"><button type="button" class="btn ghost tiny" data-a="wk" data-v="-7" aria-label="Προηγούμενη εβδομάδα">‹</button><div><b>' + shortDate(first) + ' – ' + shortDate(last) + '</b><span class="small muted">' + (total ? ' · Πληρότητα ' + Math.round(booked / total * 100) + '% (' + booked + '/' + total + ')' : '') + '</span></div>' + (first !== weekStart(t) ? '<button type="button" class="btn ghost tiny" data-a="wk" data-v="0">Σήμερα</button>' : '') + '<button type="button" class="btn ghost tiny" data-a="wk" data-v="7" aria-label="Επόμενη εβδομάδα">›</button></div>';
+  h += '<div class="wkgrid">' + cols + '</div>';
+  h += '<div class="acts"><button type="button" class="btn" data-a="new-class">Νέο μάθημα</button><button type="button" class="btn ghost" data-a="copy-week">Αντιγραφή εβδομάδας στην επόμενη</button></div>';
   return h;
 }
 function viewSchedule() {
   var t = todayKey(), keys = [], i, first = monday();
   for (i = 0; i < 28; i++) keys.push(addDays(first, i));
   if (!UI.aDay) UI.aDay = t;
-  var list = classesOn(UI.aDay);
-  var h = '<h1 class="page">Πρόγραμμα</h1><div class="days" id="dayStrip">' + keys.map(function (k) { var x = dateOf(k); return '<button type="button" data-a="aday" data-v="' + k + '" aria-pressed="' + (k === UI.aDay) + '" aria-label="' + niceDate(k) + '"><small>' + (k === t ? 'Σήμερα' : DAYS[x.getDay()]) + '</small><span>' + x.getDate() + '</span></button>'; }).join('') + '</div>';
-  h += '<div class="acts"><button type="button" class="btn" data-a="new-class">Νέο μάθημα</button><button type="button" class="btn ghost" data-a="copy-day"' + (list.length ? '' : ' disabled') + '>Αντιγραφή ημέρας στην επόμενη εβδομάδα</button><button type="button" class="btn ghost" data-a="copy-week">Αντιγραφή όλης της εβδομάδας</button></div>';
-  h += list.length ? '<div class="stack">' + list.map(adminClassRow).join('') + '</div>' : '<div class="empty"><span>Δεν υπάρχουν μαθήματα την ' + niceDate(UI.aDay) + '.</span></div>';
+  function v(m, l) { return '<button type="button" data-a="sview" data-v="' + m + '" aria-pressed="' + (UI.sView === m) + '">' + l + '</button>'; }
+  var h = '<h1 class="page">Ημερολόγιο</h1><div class="seg">' + v('week', 'Εβδομάδα') + v('day', 'Ημέρα') + '</div>';
+  if (UI.sView === 'week') h += weekView();
+  else {
+    var list = classesOn(UI.aDay);
+    h += '<div class="days" id="dayStrip">' + keys.map(function (k) { var x = dateOf(k); return '<button type="button" data-a="aday" data-v="' + k + '" aria-pressed="' + (k === UI.aDay) + '" aria-label="' + niceDate(k) + '"><small>' + (k === t ? 'Σήμερα' : DAYS[x.getDay()]) + '</small><span>' + x.getDate() + '</span></button>'; }).join('') + '</div>';
+    h += '<div class="acts"><button type="button" class="btn" data-a="new-class">Νέο μάθημα</button><button type="button" class="btn ghost" data-a="copy-day"' + (list.length ? '' : ' disabled') + '>Αντιγραφή ημέρας στην επόμενη εβδομάδα</button><button type="button" class="btn ghost" data-a="copy-week">Αντιγραφή όλης της εβδομάδας</button></div>';
+    h += list.length ? '<div class="stack">' + list.map(adminClassRow).join('') + '</div>' : '<div class="empty"><span>Δεν υπάρχουν μαθήματα την ' + niceDate(UI.aDay) + '.</span></div>';
+  }
   h += '<h2 class="sec">Κανόνες ανά είδος</h2>';
   ['w', 'p'].forEach(function (d) {
     var r = D.rules[d];
@@ -398,21 +448,30 @@ function viewSchedule() {
 }
 function filteredMembers() {
   var q = UI.q.trim().toLowerCase();
-  return D.members.filter(function (m) {
-    if (q && (fullName(m) + ' ' + (m.phone || '')).toLowerCase().indexOf(q) < 0) return false;
+  var list = D.members.filter(function (m) {
+    if (q && (fullName(m) + ' ' + (m.phone || '') + ' ' + (m.email || '')).toLowerCase().indexOf(q) < 0) return false;
+    if (UI.more) return memberAlerts(m).some(function (a) { return a.k === UI.more; });
     if (UI.filter === 'all') return true;
-    return memberAlerts(m).some(function (a) { return a.k === UI.filter; });
+    var k = subState(m).k;
+    return UI.filter === 'active' ? k === 'active' || k === 'soon' : k === UI.filter;
   });
+  // Expiring and expired members are most useful soonest first.
+  if (UI.filter === 'soon' || UI.filter === 'active') list.sort(function (a, b) { return subState(a).left - subState(b).left; });
+  if (UI.filter === 'expired') list.sort(function (a, b) { return subState(b).left - subState(a).left; });
+  return list;
 }
 function memberListHtml() {
   var l = filteredMembers();
   return l.length ? l.map(memberRow).join('') : '<span class="muted">Δεν βρέθηκαν μέλη.</span>';
 }
 function viewMembers() {
-  function f(v, l) { return '<button type="button" data-a="filter" data-v="' + v + '" aria-pressed="' + (UI.filter === v) + '">' + l + '</button>'; }
-  return '<h1 class="page">Μέλη (' + D.members.length + ')</h1><div class="field"><label for="memberSearch">Αναζήτηση</label><input id="memberSearch" type="search" placeholder="Όνομα ή κινητό" value="' + esc(UI.q) + '"></div>' +
-    '<div class="seg">' + f('all', 'Όλα') + f('new', 'Νέα') + f('exp', 'Λήγουν') + f('idle', 'Απόντες') + f('noacc', 'Χωρίς σύνδεση') + f('nophone', 'Χωρίς κινητό') + '</div>' +
-    '<div class="panel"><div id="memberList">' + memberListHtml() + '</div></div>' +
+  var n = { all: D.members.length, active: countBy('active') + countBy('soon'), soon: countBy('soon'), expired: countBy('expired'), none: countBy('none') };
+  function f(v, l) { return '<button type="button" data-a="filter" data-v="' + v + '" aria-pressed="' + (!UI.more && UI.filter === v) + '">' + l + '<small>' + n[v] + '</small></button>'; }
+  function o(v, l) { return '<button type="button" class="pill' + (UI.more === v ? ' d' : '') + '" data-a="more" data-v="' + v + '" aria-pressed="' + (UI.more === v) + '">' + l + '</button>'; }
+  return '<h1 class="page">Μέλη</h1><div class="field"><label for="memberSearch">Αναζήτηση</label><input id="memberSearch" type="search" placeholder="Όνομα, κινητό ή email" value="' + esc(UI.q) + '"></div>' +
+    '<div class="seg counts">' + f('all', 'Όλα') + f('active', 'Ενεργοί') + f('soon', 'Λήγουν') + f('expired', 'Έληξαν') + f('none', 'Χωρίς') + '</div>' +
+    '<div class="pills">' + o('new', 'Νέες εγγραφές') + o('idle', 'Απόντες') + o('noacc', 'Δεν έχουν συνδεθεί') + o('nophone', 'Χωρίς κινητό') + '</div>' +
+    '<div class="panel"><div class="small muted" id="memberCount">' + filteredMembers().length + ' μέλη</div><div id="memberList">' + memberListHtml() + '</div></div>' +
     '<div class="panel"><b>Αρχείο μελών και υπολοίπων</b><p class="small muted">Κατέβασέ το τακτικά, ώστε να ξέρεις τι είχε κάθε μέλος αν χαθούν δεδομένα. Δεν αντικαθιστά πλήρες αντίγραφο ασφαλείας. Έχει προσωπικά στοιχεία, οπότε φύλαξέ το με ασφάλεια.</p><button type="button" class="btn ghost" data-a="export-members">Κατέβασε αρχείο</button></div>';
 }
 function downloadCsv(filename, header, rows) {
@@ -478,7 +537,7 @@ function inviteCandidates() {
 }
 function adminNav() {
   function b(t, l) { return '<button type="button" data-a="atab" data-v="' + t + '"' + (UI.admin === t ? ' aria-current="page"' : '') + '>' + l + '</button>'; }
-  return '<nav class="nav" aria-label="Μενού διαχείρισης"><div>' + b('today', 'Σήμερα') + b('schedule', 'Πρόγραμμα') + b('members', 'Μέλη') + b('import', 'Εισαγωγή') + '</div></nav>';
+  return '<nav class="nav" aria-label="Μενού διαχείρισης"><div>' + b('today', 'Αρχική') + b('schedule', 'Ημερολόγιο') + b('members', 'Μέλη') + b('import', 'Εισαγωγή') + '</div></nav>';
 }
 
 /* ---------- Sheets ---------- */
@@ -532,13 +591,25 @@ function memberSheet(m, s) {
   if (!m) return '';
   var subs = D.allSubs[m.id] || {};
   function ed(d) {
-    var pl = subs[d];
-    return '<div class="plan d-' + d + '"><b>' + DISC[d].name + '</b><span class="small muted">' + (pl ? planText(pl) + (pl.kind === 'count' ? ' επισκέψεις' : '') + ' · ' + planSub(pl) : 'Χωρίς συνδρομή') + '</span>' +
-      '<div class="grid2"><div class="field"><label for="k-' + d + '">Τύπος</label><select id="k-' + d + '"><option value="count"' + (d === 'p' ? ' selected' : '') + '>Επισκέψεις</option><option value="unlimited"' + (d === 'w' ? ' selected' : '') + '>Απεριόριστα</option></select></div><div class="field"><label for="n-' + d + '">Επισκέψεις</label><input id="n-' + d + '" type="number" min="1" max="999" value="8"></div><div class="field"><label for="x-' + d + '">Διάρκεια (μέρες)</label><input id="x-' + d + '" type="number" min="1" max="730" value="30"></div></div>' +
-      '<button type="button" class="btn tiny" data-a="save-plan" data-id="' + m.id + '" data-v="' + d + '">' + (pl ? 'Ανανέωση' : 'Ενεργοποίηση') + ' ' + DISC[d].name + '</button></div>';
+    var pl = subs[d], kind = pl ? pl.kind : 'unlimited';
+    var base = pl && pl.expires_on >= todayKey() ? pl.expires_on : todayKey();
+    var left = pl ? daysUntil(pl.expires_on) : null;
+    var status = pl ? '<strong>' + (left < 0 ? 'Έληξε' : planText(pl)) + '</strong><span class="small">' + (pl.kind === 'count' && left >= 0 ? 'επισκέψεις · ' : '') + planSub(pl) + (left >= 0 ? ' (' + leftText(left) + ')' : '') + '</span>' : '<span class="small muted">Χωρίς συνδρομή</span>';
+    return '<div class="plan d-' + d + '"><b>' + DISC[d].name + '</b>' + status +
+      '<div class="quick" role="group" aria-label="Γρήγορη ανανέωση ' + DISC[d].name + '">' + [[1, '+1 μήνας'], [3, '+3 μήνες'], [6, '+6 μήνες'], [12, '+1 χρόνος']].map(function (q) { return '<button type="button" class="btn ghost tiny" data-a="plan-add" data-v="' + d + '" data-n="' + q[0] + '" data-base="' + base + '">' + q[1] + '</button>'; }).join('') + '</div>' +
+      '<div class="grid2"><div class="field"><label for="x-' + d + '">Λήξη</label><input id="x-' + d + '" type="date" value="' + (pl ? pl.expires_on : addMonths(todayKey(), 1)) + '"></div><div class="field"><label for="k-' + d + '">Τύπος</label><select id="k-' + d + '" data-kind="' + d + '"><option value="unlimited"' + (kind === 'unlimited' ? ' selected' : '') + '>Απεριόριστα</option><option value="count"' + (kind === 'count' ? ' selected' : '') + '>Επισκέψεις</option></select></div><div class="field"' + (kind === 'count' ? '' : ' hidden') + ' id="nf-' + d + '"><label for="n-' + d + '">Επισκέψεις</label><input id="n-' + d + '" type="number" min="1" max="999" value="' + (pl && pl.kind === 'count' ? pl.visits_left : 8) + '"></div></div>' +
+      '<div class="acts"><button type="button" class="btn tiny" data-a="save-plan" data-id="' + m.id + '" data-v="' + d + '">' + (pl ? 'Αποθήκευση' : 'Ενεργοποίηση') + ' ' + DISC[d].name + '</button>' + (pl && left >= 0 ? '<button type="button" class="btn danger tiny" data-a="plan-stop" data-id="' + m.id + '" data-v="' + d + '">Διακοπή</button>' : '') + '</div></div>';
+  }
+  function bookingsHtml() {
+    if (!s.bookings) return '<p class="small muted">Φόρτωση κρατήσεων...</p>';
+    var mine = s.bookings.map(function (b) { var c = classById(b.class_id); return c ? { c: c, b: b } : null; }).filter(Boolean).sort(function (a, b) { return a.c.start - b.c.start; });
+    var next = mine.filter(function (x) { return !isStarted(x.c); }), past = mine.filter(function (x) { return isStarted(x.c); });
+    return '<div class="panel"><b>Επόμενες κρατήσεις (' + next.length + ')</b>' + (next.length ? '<div class="list">' + next.map(function (x) { return '<div class="row"><div class="grow">' + esc(classTitle(x.c)) + '<br><span class="small muted">' + niceDate(x.c.date) + ', ' + x.c.time + '</span></div><button type="button" class="btn ghost tiny" data-a="member-unbook" data-id="' + x.c.id + '" data-m="' + m.id + '">Αφαίρεση</button></div>'; }).join('') + '</div>' : '<span class="small muted">Καμία.</span>') +
+      (past.length ? '<span class="small muted">Αυτή την εβδομάδα: ' + past.length + (past.length === 1 ? ' κράτηση' : ' κρατήσεις') + ', ήρθε σε ' + past.filter(function (x) { return x.b.attended; }).length + '.</span>' : '') + '</div>';
   }
   var al = memberAlerts(m);
   return '<h2 id="sheetTitle">' + esc(fullName(m)) + '</h2>' + (m.health_cert_expires ? '<div class="small" style="color:' + (daysLeftTo(m.health_cert_expires) <= 30 ? 'var(--bad)' : 'var(--muted)') + '">Κάρτα υγείας: λήγει ' + esc(leftText(daysLeftTo(m.health_cert_expires))) + ' (' + esc(String(m.health_cert_expires).split('-').reverse().join('/')) + ')</div>' : '<div class="small muted">Κάρτα υγείας: δεν έχει καταχωρηθεί</div>') + (al.length ? '<div class="pills">' + al.map(function (a) { return '<span class="pill ' + a.c + '">' + esc(a.t) + '</span>'; }).join('') + '</div>' : '') +
+    ed('w') + ed('p') + bookingsHtml() + '<h3 class="sec" style="font-size:12.5px">Στοιχεία</h3>' +
     '<form class="stack" id="memberForm" data-id="' + m.id + '" novalidate><div class="grid2">' +
       '<div class="field"><label for="mfFirst">Όνομα</label><input id="mfFirst" value="' + esc(m.first_name) + '"></div>' +
       '<div class="field"><label for="mfLast">Επώνυμο</label><input id="mfLast" value="' + esc(m.last_name) + '"></div>' +
@@ -548,7 +619,7 @@ function memberSheet(m, s) {
       '<div class="field"><label for="mfCert">Λήξη κάρτας υγείας</label><input id="mfCert" type="date" value="' + esc(m.health_cert_expires ? String(m.health_cert_expires).slice(0, 10) : '') + '"></div></div>' +
       (s.err ? '<span class="err">' + esc(s.err) + '</span>' : '') +
       '<div class="acts"><button type="button" class="btn ghost tiny" data-a="swap-name">Αντιμετάθεση ονόματος και επωνύμου</button><button type="submit" class="btn tiny">Αποθήκευση στοιχείων</button></div>' +
-      (m.auth_user_id ? '<p class="small muted">Αν αλλάξεις το κινητό, το μέλος χρειάζεται νέο κωδικό πρόσκλησης για να ξανασυνδεθεί.</p>' : '') + '</form>' + ed('w') + ed('p') +
+      (m.auth_user_id ? '<p class="small muted">Αν αλλάξεις το κινητό, το μέλος χρειάζεται νέο κωδικό πρόσκλησης για να ξανασυνδεθεί.</p>' : '') + '</form>' +
     '<div class="field"><label for="memberLevel">Επίπεδο στα πιλάτες</label><select id="memberLevel" data-level="' + m.id + '"><option value="">Δεν έχει οριστεί</option>' + LEVELS.map(function (l) { return '<option' + (m.level === l ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select></div>' +
     '<div class="panel"><b>Κωδικός πρόσκλησης</b><p class="small muted">Για πρώτη ενεργοποίηση ή όταν το μέλος ξεχάσει τον κωδικό του. Ισχύει 30 μέρες.</p>' + (s.code ? '<div class="code">' + esc(s.code) + '</div><p class="small muted">Φαίνεται μόνο τώρα.</p>' : '<button type="button" class="btn ghost tiny" data-a="one-invite" data-id="' + m.id + '"' + (m.phone ? '' : ' disabled') + '>Νέος κωδικός</button>') + '</div>' +
     '<button type="button" class="btn ghost" data-a="close">Κλείσιμο</button>';
@@ -578,7 +649,7 @@ function render() {
   } else if (UI.mode === 'admin' && D.me.is_admin) {
     body = modeBar() + (UI.admin === 'schedule' ? viewSchedule() : UI.admin === 'members' ? viewMembers() : UI.admin === 'import' ? viewImport() : viewToday());
     nav = adminNav();
-    if (UI.admin === 'import') cls += ' wide';
+    if (UI.admin === 'import' || (UI.admin === 'schedule' && UI.sView === 'week')) cls += ' wide';
   } else {
     body = modeBar() + (UI.tab === 'bookings' ? viewBookings() : UI.tab === 'profile' ? viewProfile() : viewProgram());
     nav = memberNav();
@@ -594,6 +665,12 @@ function renderSheet() {
   root.innerHTML = sheetHtml();
   var sh = root.querySelector('#sheet');
   if (sh) { sh.scrollTop = top; if (!keep) sh.focus(); }
+}
+async function loadMemberBookings(id) {
+  try {
+    var list = await api.memberBookings(id);
+    if (UI.sheet && UI.sheet.kind === 'member' && UI.sheet.id === id) { UI.sheet.bookings = list; renderSheet(); }
+  } catch (e) { if (UI.sheet && UI.sheet.kind === 'member') { UI.sheet.bookings = []; renderSheet(); } }
 }
 async function loadPeople(id) {
   var people = await api.classPeople(id);
@@ -624,6 +701,11 @@ var ACT = {
   disc: function (t) { UI.disc = t.dataset.v; UI.day = null; render(); },
   day: function (t) { UI.day = t.dataset.v; render(); },
   aday: function (t) { UI.aDay = t.dataset.v; render(); },
+  'aday-day': function (t) { UI.aDay = t.dataset.v; UI.sView = 'day'; render(); },
+  sview: function (t) { UI.sView = t.dataset.v; render(); },
+  wk: function (t) { var n = +t.dataset.v, cur = UI.wk || weekStart(todayKey()); UI.wk = n ? addDays(cur, n) : weekStart(todayKey()); UI.aDay = UI.wk; render(); },
+  more: function (t) { UI.more = UI.more === t.dataset.v ? '' : t.dataset.v; render(); },
+  'goto-more': function (t) { UI.more = t.dataset.v; UI.admin = 'members'; render(); },
   close: closeSheet,
   retry: function () { openApp(); },
   logout: async function () { stopLiveUpdates(); await api.logout(); D = { me: null, subs: {}, rules: {}, classes: [], recurring: [], members: [], allSubs: {}, notes: [] }; UI.screen = 'auth'; UI.authMode = 'login'; UI.authErr = ''; UI.mode = 'member'; UI.sheet = null; UI.imp = null; UI.impResult = null; UI.invites = null; UI.q = ''; render(); },
@@ -658,7 +740,10 @@ var ACT = {
   },
   'rec-del': function (t) { run(function () { return api.stopRecurring(t.dataset.id); }, 'Η σταθερή κράτηση σταμάτησε. Όσες έχουν ήδη κλειστεί παραμένουν.'); },
   'open-class': function (t) { UI.sheet = { kind: 'class', id: t.dataset.id, people: null }; render(); loadPeople(t.dataset.id).catch(function (e) { toast(friendlyError(e)); }); },
-  'open-member': function (t) { UI.sheet = { kind: 'member', id: t.dataset.id }; render(); },
+  'open-member': function (t) { UI.sheet = { kind: 'member', id: t.dataset.id }; render(); loadMemberBookings(t.dataset.id); },
+  'member-unbook': function (t) { var mid = t.dataset.m; run(function () { return api.adminRemove(mid, t.dataset.id); }, 'Η κράτηση αφαιρέθηκε.', { after: function () { return loadMemberBookings(mid); } }); },
+  'plan-add': function (t) { var el = byId('x-' + t.dataset.v); if (el) el.value = addMonths(t.dataset.base, +t.dataset.n); },
+  'plan-stop': function (t) { var d = t.dataset.v, sub = (D.allSubs[t.dataset.id] || {})[d]; if (!sub) return; run(function () { return api.saveSubscription(t.dataset.id, d, sub.kind, sub.kind === 'count' ? sub.visits_left : null, addDays(todayKey(), -1)); }, DISC[d].name + ': η συνδρομή διακόπηκε.'); },
   present: function (t) { var id = t.dataset.id; run(function () { return api.setAttended(t.dataset.m, id, t.dataset.v === '1'); }, null, { after: function () { return loadPeople(id); } }); },
   'admin-remove': function (t) { var id = t.dataset.id; run(function () { return api.adminRemove(t.dataset.m, id); }, 'Αφαιρέθηκε. Αν υπήρχε αναμονή, η θέση πέρασε στον επόμενο.', { after: function () { return loadPeople(id); } }); },
   'admin-add': function (t) { var id = t.dataset.id, mid = byId('addMember').value; run(function () { return api.adminBook(mid, id); }, function (r) { return r === 'waitlist' ? 'Μπήκε στην αναμονή.' : 'Προστέθηκε.'; }, { after: function () { return loadPeople(id); } }); },
@@ -679,15 +764,15 @@ var ACT = {
     }, function () { return n ? 'Αντιγράφηκαν ' + n + ' μαθήματα στις ' + shortDate(target) + '.' : 'Τα μαθήματα υπάρχουν ήδη στις ' + shortDate(target) + '.'; });
   },
   'save-plan': function (t) {
-    var d = t.dataset.v, kind = byId('k-' + d).value, n = parseInt(byId('n-' + d).value, 10), days = parseInt(byId('x-' + d).value, 10);
-    if (!(days >= 1 && days <= 730)) { toast('Η διάρκεια πρέπει να είναι από 1 έως 730 μέρες.'); return; }
+    var d = t.dataset.v, kind = byId('k-' + d).value, n = parseInt(byId('n-' + d).value, 10), exp = byId('x-' + d).value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(exp)) { toast('Διάλεξε ημερομηνία λήξης.'); return; }
     if (kind === 'count' && !(n >= 1 && n <= 999)) { toast('Γράψε πόσες επισκέψεις, από 1 έως 999.'); return; }
-    run(function () { return api.saveSubscription(t.dataset.id, d, kind, kind === 'count' ? n : null, addDays(todayKey(), days)); }, DISC[d].name + ': η συνδρομή ενημερώθηκε.');
+    run(function () { return api.saveSubscription(t.dataset.id, d, kind, kind === 'count' ? n : null, exp); }, DISC[d].name + ': η συνδρομή ισχύει έως ' + shortDate(exp) + '.');
   },
   'swap-name': function () { var a = byId('mfFirst'), b = byId('mfLast'), x = a.value; a.value = b.value; b.value = x; },
   'one-invite': function (t) { var id = t.dataset.id; run(function () { return api.newInvite(id); }, null, { after: function (code) { if (UI.sheet) UI.sheet.code = code; } }); },
-  filter: function (t) { UI.filter = t.dataset.v; render(); },
-  'goto-filter': function (t) { UI.filter = t.dataset.v; UI.admin = 'members'; render(); },
+  filter: function (t) { UI.filter = t.dataset.v; UI.more = ''; render(); },
+  'goto-filter': function (t) { UI.filter = t.dataset.v === 'exp' ? 'soon' : t.dataset.v; UI.more = ''; UI.admin = 'members'; render(); },
   'imp-all': function (t) { UI.imp.rows.forEach(function (r) { if (!r.choice) r.choice = t.dataset.v; }); render(); },
   'imp-cancel': function () { UI.imp = null; render(); },
   'imp-ask': function () { UI.sheet = { kind: 'imp-confirm' }; render(); },
@@ -720,7 +805,7 @@ function submitNewClass() {
 }
 
 function submitMemberForm(form) {
-  var id = form.dataset.id, first = byId('mfFirst').value.trim(), last = byId('mfLast').value.trim(), phone = byId('mfPhone').value.replace(/\s/g, ''), email = byId('mfEmail').value.trim();
+  var id = form.dataset.id, first = byId('mfFirst').value.trim(), last = byId('mfLast').value.trim(), phone = cleanPhone(byId('mfPhone').value), email = byId('mfEmail').value.trim();
   var err = !first || !last ? 'Γράψε όνομα και επώνυμο.' : phone && !/^69\d{8}$/.test(phone) ? 'Το κινητό θέλει 10 ψηφία και να ξεκινά από 69.' : email && !/^\S+@\S+\.\S+$/.test(email) ? 'Το email δεν φαίνεται σωστό.' : '';
   if (err) { UI.sheet.err = err; renderSheet(); return; }
   UI.sheet.err = '';
@@ -776,7 +861,7 @@ function bindEvents() {
     else if (id === 'memberForm') submitMemberForm(e.target);
   });
   document.addEventListener('input', function (e) {
-    if (e.target.id === 'memberSearch') { UI.q = e.target.value; byId('memberList').innerHTML = memberListHtml(); }
+    if (e.target.id === 'memberSearch') { UI.q = e.target.value; byId('memberList').innerHTML = memberListHtml(); var mc = byId('memberCount'); if (mc) mc.textContent = filteredMembers().length + ' μέλη'; }
   });
   document.addEventListener('change', function (e) {
     var el = e.target, ds = el.dataset || {};
@@ -789,6 +874,7 @@ function bindEvents() {
       if (isNaN(v) || v < +el.min || v > +el.max) { el.value = D.rules[p[0]][p[1]]; toast('Γράψε τιμή από ' + el.min + ' έως ' + el.max + '.'); return; }
       run(function () { return api.saveRule(p[0], p[1], v); }, 'Ο κανόνας για ' + DISC[p[0]].name + ' αποθηκεύτηκε.');
     }
+    if (ds.kind) { var nf = byId('nf-' + ds.kind); if (nf) nf.hidden = el.value !== 'count'; }
     if (ds.level) { run(function () { return api.updateMember(ds.level, { level: el.value || null }); }, 'Το επίπεδο αποθηκεύτηκε.'); }
   });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && UI.sheet) closeSheet(); });
