@@ -628,6 +628,7 @@ function memberSheet(m, s) {
       (m.auth_user_id ? '<p class="small muted">Αν αλλάξεις το κινητό, το μέλος χρειάζεται νέο κωδικό πρόσκλησης για να ξανασυνδεθεί.</p>' : '') + '</form>' +
     '<div class="field"><label for="memberLevel">Επίπεδο στα πιλάτες</label><select id="memberLevel" data-level="' + m.id + '"><option value="">Δεν έχει οριστεί</option>' + LEVELS.map(function (l) { return '<option' + (m.level === l ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select></div>' +
     '<div class="panel"><b>Κωδικός πρόσκλησης</b><p class="small muted">Για πρώτη ενεργοποίηση ή όταν το μέλος ξεχάσει τον κωδικό του. Ισχύει 30 μέρες.</p>' + (s.code ? '<div class="code">' + esc(s.code) + '</div><p class="small muted">Φαίνεται μόνο τώρα.</p>' : '<button type="button" class="btn ghost tiny" data-a="one-invite" data-id="' + m.id + '"' + (m.phone ? '' : ' disabled') + '>Νέος κωδικός</button>') + '</div>' +
+    (m.id === D.me.id ? '' : s.confirmDelete ? '<div class="notice"><b>Οριστική διαγραφή: ' + esc(fullName(m)) + '</b><br>Σβήνονται το μέλος, οι συνδρομές, οι κρατήσεις και η λίστα αναμονής του. Δεν γίνεται αναίρεση.</div><div class="acts"><button type="button" class="btn ghost" data-a="del-member-no">Πίσω</button><button type="button" class="btn danger" data-a="del-member" data-id="' + m.id + '">Ναι, διαγραφή</button></div>' : '<button type="button" class="btn danger" data-a="del-member-ask">Διαγραφή μέλους</button>') +
     '<button type="button" class="btn ghost" data-a="close">Κλείσιμο</button>';
 }
 function newClassSheet(s) {
@@ -748,6 +749,16 @@ var ACT = {
   'open-class': function (t) { UI.sheet = { kind: 'class', id: t.dataset.id, people: null }; render(); loadPeople(t.dataset.id).catch(function (e) { toast(friendlyError(e)); }); },
   'open-member': function (t) { UI.sheet = { kind: 'member', id: t.dataset.id }; render(); loadMemberBookings(t.dataset.id); },
   'member-unbook': function (t) { var mid = t.dataset.m; run(function () { return api.adminRemove(mid, t.dataset.id); }, 'Η κράτηση αφαιρέθηκε.', { after: function () { return loadMemberBookings(mid); } }); },
+  'del-member-ask': function () { UI.sheet.confirmDelete = true; renderSheet(); var sh = byId('sheet'); if (sh) sh.scrollTop = sh.scrollHeight; },
+  'del-member-no': function () { UI.sheet.confirmDelete = false; renderSheet(); },
+  'del-member': function (t) {
+    var id = t.dataset.id, m = memberById(id), name = m ? fullName(m) : '', upcoming = ((UI.sheet && UI.sheet.bookings) || []).filter(function (b) { var c = classById(b.class_id); return c && !isStarted(c); });
+    run(async function () {
+      // Future places are freed the normal way first, so the waiting list moves up.
+      for (var i = 0; i < upcoming.length; i++) await api.adminRemove(id, upcoming[i].class_id);
+      return api.deleteMember(id);
+    }, 'Το μέλος ' + name + ' διαγράφηκε.', { closeSheet: true });
+  },
   'plan-add': function (t) { var el = byId('x-' + t.dataset.v); if (el) el.value = addMonths(t.dataset.base, +t.dataset.n); },
   'plan-stop': function (t) { var d = t.dataset.v, sub = (D.allSubs[t.dataset.id] || {})[d]; if (!sub) return; run(function () { return api.saveSubscription(t.dataset.id, d, sub.kind, sub.kind === 'count' ? sub.visits_left : null, addDays(todayKey(), -1)); }, DISC[d].name + ': η συνδρομή διακόπηκε.'); },
   present: function (t) { var id = t.dataset.id; run(function () { return api.setAttended(t.dataset.m, id, t.dataset.v === '1'); }, null, { after: function () { return loadPeople(id); } }); },
