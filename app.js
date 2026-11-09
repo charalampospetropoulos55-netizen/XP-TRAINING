@@ -27,7 +27,7 @@ function byId(id) { return document.getElementById(id); }
 
 /* ---------- State ---------- */
 var D = { me: null, subs: {}, rules: {}, classes: [], recurring: [], members: [], allSubs: {} };
-var UI = { screen: 'loading', authMode: 'login', authErr: '', mode: 'member', tab: 'program', admin: 'today', disc: 'w', day: null, aDay: null, sView: 'week', wk: null, q: '', filter: 'all', more: '', sheet: null, imp: null, invites: null };
+var UI = { screen: 'loading', authMode: 'login', authErr: '', mode: 'member', tab: 'program', admin: 'today', disc: 'w', day: null, aDay: null, sView: 'week', wk: null, q: '', filter: 'active', mdisc: 'all', more: '', sheet: null, imp: null, invites: null };
 var busy = false, toastTimer = null;
 
 function normalizeClass(c) {
@@ -365,9 +365,9 @@ function adminClassRow(c) {
   return '<article class="cls d-' + c.d + '"><div class="time">' + c.time + '</div><div class="cinfo"><div class="ctitle">' + esc(classTitle(c)) + '</div>' + pips(c) + countText(c) + '</div><div class="cact"><span class="hint">' + esc(c.coach) + '</span><button type="button" class="btn ghost tiny" data-a="open-class" data-id="' + c.id + '">Άνοιγμα</button></div></article>';
 }
 /* Subscription state of a member, across both disciplines, the way the front desk thinks of it. */
-function subState(m) {
+function subState(m, only) {
   var subs = D.allSubs[m.id] || {}, best = null;
-  ['w', 'p'].forEach(function (d) { var s = subs[d]; if (s && (!best || s.expires_on > best.expires_on)) best = s; });
+  (only && only !== 'all' ? [only] : ['w', 'p']).forEach(function (d) { var s = subs[d]; if (s && (!best || s.expires_on > best.expires_on)) best = s; });
   if (!best) return { k: 'none', left: null };
   var left = daysUntil(best.expires_on);
   return { k: left < 0 ? 'expired' : left <= 7 ? 'soon' : 'active', left: left, exp: best.expires_on };
@@ -385,7 +385,7 @@ function memberRow(m) {
   var al = memberAlerts(m).filter(function (a) { return a.k !== 'exp'; });
   return '<button type="button" class="memberbtn" data-a="open-member" data-id="' + m.id + '"><span class="grow"><b>' + esc(fullName(m)) + '</b><br><span class="small muted">' + esc(m.phone || 'Χωρίς κινητό') + '</span></span><span class="subs">' + subLine(m) + '</span>' + (al.length ? '<span class="pills">' + al.map(function (a) { return '<span class="pill ' + a.c + '">' + esc(a.t) + '</span>'; }).join('') + '</span>' : '') + '</button>';
 }
-function countBy(k) { return D.members.filter(function (m) { return subState(m).k === k; }).length; }
+function countBy(k, d) { return D.members.filter(function (m) { return subState(m, d).k === k; }).length; }
 function viewToday() {
   var t = todayKey(), k = t, i;
   for (i = 0; i < 7 && !classesOn(k).length; i++) k = addDays(k, 1);
@@ -451,13 +451,15 @@ function filteredMembers() {
   var list = D.members.filter(function (m) {
     if (q && (fullName(m) + ' ' + (m.phone || '') + ' ' + (m.email || '')).toLowerCase().indexOf(q) < 0) return false;
     if (UI.more) return memberAlerts(m).some(function (a) { return a.k === UI.more; });
-    if (UI.filter === 'all') return true;
-    var k = subState(m).k;
+    var k = subState(m, UI.mdisc).k;
+    // In one discipline, "all" means everyone who has or had a subscription there.
+    if (UI.filter === 'all') return UI.mdisc === 'all' || k !== 'none';
     return UI.filter === 'active' ? k === 'active' || k === 'soon' : k === UI.filter;
   });
+  var d = UI.mdisc;
   // Expiring and expired members are most useful soonest first.
-  if (UI.filter === 'soon' || UI.filter === 'active') list.sort(function (a, b) { return subState(a).left - subState(b).left; });
-  if (UI.filter === 'expired') list.sort(function (a, b) { return subState(b).left - subState(a).left; });
+  if (UI.filter === 'soon' || UI.filter === 'active') list.sort(function (a, b) { return subState(a, d).left - subState(b, d).left; });
+  if (UI.filter === 'expired') list.sort(function (a, b) { return subState(b, d).left - subState(a, d).left; });
   return list;
 }
 function memberListHtml() {
@@ -465,11 +467,15 @@ function memberListHtml() {
   return l.length ? l.map(memberRow).join('') : '<span class="muted">Δεν βρέθηκαν μέλη.</span>';
 }
 function viewMembers() {
-  var n = { all: D.members.length, active: countBy('active') + countBy('soon'), soon: countBy('soon'), expired: countBy('expired'), none: countBy('none') };
+  var d = UI.mdisc;
+  var n = { active: countBy('active', d) + countBy('soon', d), soon: countBy('soon', d), expired: countBy('expired', d), none: countBy('none', d) };
+  n.all = d === 'all' ? D.members.length : n.active + n.expired;
+  function g(v, l) { return '<button type="button" data-a="mdisc" data-v="' + v + '" aria-pressed="' + (d === v) + '">' + l + '</button>'; }
   function f(v, l) { return '<button type="button" data-a="filter" data-v="' + v + '" aria-pressed="' + (!UI.more && UI.filter === v) + '">' + l + '<small>' + n[v] + '</small></button>'; }
   function o(v, l) { return '<button type="button" class="pill' + (UI.more === v ? ' d' : '') + '" data-a="more" data-v="' + v + '" aria-pressed="' + (UI.more === v) + '">' + l + '</button>'; }
   return '<h1 class="page">Μέλη</h1><div class="field"><label for="memberSearch">Αναζήτηση</label><input id="memberSearch" type="search" placeholder="Όνομα, κινητό ή email" value="' + esc(UI.q) + '"></div>' +
-    '<div class="seg counts">' + f('all', 'Όλα') + f('active', 'Ενεργοί') + f('soon', 'Λήγουν') + f('expired', 'Έληξαν') + f('none', 'Χωρίς') + '</div>' +
+    '<div class="seg big d-' + (d === 'p' ? 'p' : 'w') + '">' + g('all', 'Όλοι') + g('w', 'Βάρη') + g('p', 'Πιλάτες') + '</div>' +
+    '<div class="seg counts">' + f('all', 'Όλα') + f('active', 'Ενεργοί') + f('soon', 'Λήγουν') + f('expired', 'Έληξαν') + (d === 'all' ? f('none', 'Χωρίς') : '') + '</div>' +
     '<div class="pills">' + o('new', 'Νέες εγγραφές') + o('idle', 'Απόντες') + o('noacc', 'Δεν έχουν συνδεθεί') + o('nophone', 'Χωρίς κινητό') + '</div>' +
     '<div class="panel"><div class="small muted" id="memberCount">' + filteredMembers().length + ' μέλη</div><div id="memberList">' + memberListHtml() + '</div></div>' +
     '<div class="panel"><b>Αρχείο μελών και υπολοίπων</b><p class="small muted">Κατέβασέ το τακτικά, ώστε να ξέρεις τι είχε κάθε μέλος αν χαθούν δεδομένα. Δεν αντικαθιστά πλήρες αντίγραφο ασφαλείας. Έχει προσωπικά στοιχεία, οπότε φύλαξέ το με ασφάλεια.</p><button type="button" class="btn ghost" data-a="export-members">Κατέβασε αρχείο</button></div>';
@@ -772,7 +778,8 @@ var ACT = {
   'swap-name': function () { var a = byId('mfFirst'), b = byId('mfLast'), x = a.value; a.value = b.value; b.value = x; },
   'one-invite': function (t) { var id = t.dataset.id; run(function () { return api.newInvite(id); }, null, { after: function (code) { if (UI.sheet) UI.sheet.code = code; } }); },
   filter: function (t) { UI.filter = t.dataset.v; UI.more = ''; render(); },
-  'goto-filter': function (t) { UI.filter = t.dataset.v === 'exp' ? 'soon' : t.dataset.v; UI.more = ''; UI.admin = 'members'; render(); },
+  mdisc: function (t) { UI.mdisc = t.dataset.v; UI.more = ''; if (t.dataset.v !== 'all' && UI.filter === 'none') UI.filter = 'active'; render(); },
+  'goto-filter': function (t) { UI.filter = t.dataset.v === 'exp' ? 'soon' : t.dataset.v; UI.more = ''; UI.mdisc = 'all'; UI.admin = 'members'; render(); },
   'imp-all': function (t) { UI.imp.rows.forEach(function (r) { if (!r.choice) r.choice = t.dataset.v; }); render(); },
   'imp-cancel': function () { UI.imp = null; render(); },
   'imp-ask': function () { UI.sheet = { kind: 'imp-confirm' }; render(); },
