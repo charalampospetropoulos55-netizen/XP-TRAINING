@@ -86,6 +86,21 @@
     },
     updateMember: async function (id, patch) { return unwrap(await sb.from('members').update(patch).eq('id', id)); },
     newInvite: async function (id) { return unwrap(await sb.rpc('admin_new_invite', { p_member: id })); },
+    // Deletes a member for good. If the database keeps their history linked, that history goes first.
+    deleteMember: async function (id) {
+      var r = await sb.from('members').delete().eq('id', id).select('id');
+      if (r.error && /foreign key|violates|constraint/i.test(r.error.message)) {
+        var tables = ['bookings', 'waitlist', 'recurring', 'subscriptions', 'notifications'];
+        for (var i = 0; i < tables.length; i++) {
+          var x = await sb.from(tables[i]).delete().eq('member_id', id);
+          if (x.error && !/does not exist|relation/i.test(x.error.message)) throw new Error('Η διαγραφή σταμάτησε (' + tables[i] + '). Το μέλος δεν διαγράφηκε.');
+        }
+        r = await sb.from('members').delete().eq('id', id).select('id');
+      }
+      if (r.error) throw new Error('Η βάση δεν επέτρεψε τη διαγραφή του μέλους.');
+      if (!r.data || !r.data.length) throw new Error('Η βάση δεν επέτρεψε τη διαγραφή του μέλους. Χρειάζεται άδεια διαγραφής για τον διαχειριστή στο Supabase.');
+      return true;
+    },
     importMembers: async function (rows) { return unwrap(await sb.rpc('import_members', { p_rows: rows })); },
   };
 })();
