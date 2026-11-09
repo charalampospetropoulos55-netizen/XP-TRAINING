@@ -1,6 +1,6 @@
 // Makes the app installable and keeps its screens available on a weak connection.
 // It only stores the app's own files, never member data.
-var CACHE = 'xp-shell-v6';
+var CACHE = 'xp-shell-v7';
 var FILES = ['./', 'index.html', 'styles.css', 'config.js', 'api.js', 'import.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', function (e) {
