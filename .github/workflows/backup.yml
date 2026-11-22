@@ -1,0 +1,64 @@
+# Weekly backup of the Supabase database (members, subscriptions, bookings, logins, rules, functions).
+# The repository is public, so the backup is locked with a password before it is stored.
+# Needs two repository secrets (Settings > Secrets and variables > Actions):
+#   SUPABASE_DB_URL  - Supabase > Connect > Session pooler connection string, with the database password filled in
+#   BACKUP_PASSWORD  - any long password you choose; you need it to open a backup
+# Each backup is kept for 90 days under Actions > Weekly backup > the run > Artifacts.
+# How to open and restore one: see BACKUP.md.
+name: Weekly backup
+
+on:
+  schedule:
+    - cron: '41 2 * * 1'   # every Monday, 04:41 Greek time
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the secrets are set
+        env:
+          DB: ${{ secrets.SUPABASE_DB_URL }}
+          PW: ${{ secrets.BACKUP_PASSWORD }}
+        run: |
+          if [ -z "$DB" ] || [ -z "$PW" ]; then
+            echo "Missing secret: add SUPABASE_DB_URL and BACKUP_PASSWORD in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Dump the database
+        env:
+          DB: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          mkdir dump
+          supabase db dump --db-url "$DB" -f dump/roles.sql --role-only
+          supabase db dump --db-url "$DB" -f dump/schema.sql
+          supabase db dump --db-url "$DB" -f dump/data.sql --use-copy --data-only
+          supabase db dump --db-url "$DB" -f dump/auth_data.sql --use-copy --data-only --schema auth
+          ls -la dump
+          # A real backup has the members in it. Stop if it came out empty.
+          grep -q "COPY \"public\".\"members\"" dump/data.sql || { echo "Members table missing from the backup"; exit 1; }
+
+      - name: Lock it with the password
+        env:
+          PW: ${{ secrets.BACKUP_PASSWORD }}
+        run: |
+          name="xp-backup-$(date -u +%Y-%m-%d)"
+          tar czf backup.tar.gz -C dump .
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in backup.tar.gz -out "$name.tar.gz.enc" -pass env:PW
+          rm -rf dump backup.tar.gz
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: ${{ env.NAME }}.tar.gz.enc
+          retention-days: 90
+          if-no-files-found: error
