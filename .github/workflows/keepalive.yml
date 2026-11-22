@@ -1,0 +1,46 @@
+# Keeps the Supabase project awake.
+# On the free plan Supabase pauses a project after about a week with no activity,
+# and then the app shows "Δεν υπάρχει σύνδεση στο internet".
+# This asks the database a small question every 2 days, so it never counts as inactive.
+# Once a month it also writes the date to .github/keepalive.txt, because GitHub
+# switches off scheduled jobs in a repository with no commits for 60 days.
+name: Keep Supabase awake
+
+on:
+  schedule:
+    - cron: '17 6 */2 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask the database a small question
+        run: |
+          URL='https://uvflpxoeegjiiivsxlch.supabase.co'
+          KEY='sb_publishable_C3Vwgxu22IHEYxLvX1alsA_l7uvFCFA'
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/rest/v1/rules?select=discipline&limit=1" -H "apikey: $KEY" -H "Authorization: Bearer $KEY")
+            echo "Attempt $i: HTTP $code"
+            if [ "$code" -ge 200 ] && [ "$code" -lt 500 ]; then exit 0; fi
+            sleep 30
+          done
+          echo "Supabase did not answer. It may be paused: open supabase.com and press Restore."
+          exit 1
+
+      - name: Monthly commit so GitHub keeps this job switched on
+        if: github.event_name == 'schedule'
+        run: |
+          day=$(date -u +%d)
+          if [ "$day" -gt 2 ]; then echo "Not the start of the month, nothing to commit."; exit 0; fi
+          git clone --depth 1 "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" repo
+          cd repo
+          date -u +%Y-%m-%d > .github/keepalive.txt
+          git config user.name 'keepalive-bot'
+          git config user.email 'keepalive-bot@users.noreply.github.com'
+          git add .github/keepalive.txt
+          git commit -m 'Keepalive: monthly date update' || exit 0
+          git push

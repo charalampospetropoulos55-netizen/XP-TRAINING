@@ -87,7 +87,11 @@ function stopLiveUpdates() {
 function friendlyError(e) {
   var m = (e && e.message) || '';
   if (/duplicate key|unique constraint/i.test(m)) return 'Αυτό το κινητό ανήκει ήδη σε άλλο μέλος.';
-  if (/failed to fetch|networkerror|load failed/i.test(m)) return 'Δεν υπάρχει σύνδεση στο internet. Δοκίμασε ξανά.';
+  if (/failed to fetch|networkerror|load failed|timeout/i.test(m)) {
+    // The phone knows whether it is online. If it is, the problem is our server, not the member's internet.
+    if (navigator.onLine === false) return 'Δεν υπάρχει σύνδεση στο internet. Δοκίμασε ξανά.';
+    return 'Ο server του γυμναστηρίου δεν απαντάει αυτή τη στιγμή. Δοκίμασε ξανά σε λίγο ή ενημέρωσε τη ρεσεψιόν.';
+  }
   return /[Α-Ωα-ωΆ-ώ]/.test(m) ? m : 'Κάτι πήγε στραβά. Δοκίμασε ξανά.';
 }
 async function run(fn, okMsg, opts) {
@@ -648,7 +652,7 @@ function render() {
     cls += ' bare';
   } else if (UI.screen === 'offline') {
     body = LOGO + '<div class="notice">' + esc(UI.authErr || 'Δεν υπάρχει σύνδεση στο internet.') + '</div>' +
-      '<p class="small muted">Μένεις συνδεδεμένος. Η εφαρμογή θα φορτώσει μόλις επανέλθει η σύνδεση.</p>' +
+      '<p class="small muted">Μένεις συνδεδεμένος. Δεν χρειάζεται να ξαναβάλεις κωδικό.</p>' +
       '<button type="button" class="btn full" data-a="retry">Δοκίμασε ξανά</button>';
     cls += ' bare';
   } else if (UI.screen === 'auth') {
@@ -916,10 +920,13 @@ async function start() {
 // A saved login is kept until the member taps «Αποσύνδεση». A weak connection never logs anyone out.
 async function openApp() {
   var hasSession = false;
-  try { hasSession = await api.hasSession(); } catch (e) { hasSession = api.hasSavedSession(); }
+  // Never wait forever on «Φόρτωση...»: if the server is slow, fall back to the login saved on the phone.
+  try {
+    hasSession = await Promise.race([api.hasSession(), new Promise(function (_, no) { setTimeout(function () { no(new Error('timeout')); }, 8000); })]);
+  } catch (e) { hasSession = api.hasSavedSession(); }
   if (!hasSession) { UI.screen = 'auth'; render(); return; }
   try {
-    await refresh(); UI.screen = 'app'; UI.authErr = ''; startLive();
+    await Promise.race([refresh(), new Promise(function (_, no) { setTimeout(function () { no(new Error('timeout')); }, 15000); })]); UI.screen = 'app'; UI.authErr = ''; startLive();
   } catch (e) {
     if (api.isAuthError(e)) { await api.logout().catch(function () {}); UI.screen = 'auth'; UI.authErr = 'Η σύνδεσή σου έληξε. Μπες ξανά με τον κωδικό σου.'; }
     else { UI.screen = 'offline'; UI.authErr = friendlyError(e); }
